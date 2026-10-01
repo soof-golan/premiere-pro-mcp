@@ -58,6 +58,7 @@ describe("CEP installation metadata", () => {
 
     expect(packageJson.files).toContain("artifacts/MCPBridgeCEP.zxp");
     expect(signer).toContain("-selfSignedCert");
+    expect(signer).toContain("-tsa");
     expect(signer).toContain("-verify");
     expect(workflow).toContain("build-signed-cep");
     expect(workflow).toContain("signed-cep");
