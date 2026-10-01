@@ -101,6 +101,7 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
           },
           caption_format: {
             type: "string",
+            enum: ["subtitle", "608", "708", "teletext", "ebu", "op42", "op47"],
             description:
               "For action import, Premiere caption format: subtitle (default), 608, 708, teletext, ebu, op42, or op47.",
           },
@@ -180,9 +181,14 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
           op42: "Sequence.CAPTION_FORMAT_OP42",
           op47: "Sequence.CAPTION_FORMAT_OP47",
         };
-        const format =
-          formatMap[args.caption_format || "subtitle"] ||
-          "Sequence.CAPTION_FORMAT_SUBTITLE";
+        const captionFormatKey = args.caption_format ?? "subtitle";
+        const format = formatMap[captionFormatKey];
+        if (!format) {
+          return {
+            success: false,
+            error: `caption_format must be one of: ${Object.keys(formatMap).join(", ")}`,
+          };
+        }
 
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
@@ -216,7 +222,7 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
               verificationScope: "Caption-track count readback only; verify playback or exported frames before delivery.",
               item: item.name,
               startSeconds: ${startSeconds},
-              format: "${args.caption_format || "subtitle"}",
+              format: "${escapeForExtendScript(captionFormatKey)}",
               beforeTrackCount: beforeCount,
               afterTrackCount: afterCount
             });
@@ -228,7 +234,7 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
             verificationScope: "Premiere accepted the caption-track request, but this CEP host exposes no caption-track readback. No structural creation is claimed; verify playback or exported frames before delivery.",
             item: item.name,
             startSeconds: ${startSeconds},
-            format: "${args.caption_format || "subtitle"}"
+            format: "${escapeForExtendScript(captionFormatKey)}"
           });
         `);
           return sendCommand(script, bridgeOptions);

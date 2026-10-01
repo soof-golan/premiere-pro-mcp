@@ -768,6 +768,22 @@ describe("sendCommand", () => {
     ).rejects.toThrow("blocked pattern");
   });
 
+  it("rejects scripts containing lowercase system.callSystem() (the real ExtendScript API)", async () => {
+    await expect(
+      sendCommand('system.callSystem("touch /tmp/pwn")', {
+        tempDir: "/tmp/test-bridge",
+      })
+    ).rejects.toThrow("blocked pattern");
+  });
+
+  it("rejects scripts containing mixed-case System.CallSystem()", async () => {
+    await expect(
+      sendCommand('System.CallSystem("touch /tmp/pwn")', {
+        tempDir: "/tmp/test-bridge",
+      })
+    ).rejects.toThrow("blocked pattern");
+  });
+
   it("rejects scripts exceeding 500KB", async () => {
     const largeScript = "x".repeat(501 * 1024);
     await expect(

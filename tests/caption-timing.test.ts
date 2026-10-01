@@ -6,6 +6,9 @@ vi.mock("../src/bridge/file-bridge.js", () => ({
 }));
 
 import { getCaptionTools } from "../src/tools/captions.js";
+import { sendCommand } from "../src/bridge/file-bridge.js";
+
+const mockedSendCommand = vi.mocked(sendCommand);
 
 const SRT = `1
 00:00:00,000 --> 00:00:02,000
@@ -151,5 +154,23 @@ describe("guided lecture-caption action", () => {
   it("preserves import behavior and rejects an import without its project item", async () => {
     const tool = getCaptionTools({}).create_caption_track as any;
     await expect(tool.handler({})).resolves.toMatchObject({ success: false, error: expect.stringContaining("item_id") });
+  });
+
+  it("rejects a caption_format quote-breakout payload instead of embedding it in the generated script", async () => {
+    mockedSendCommand.mockClear();
+    const tool = getCaptionTools({}).create_caption_track as any;
+    const payload = 'subtitle"+(system.callSystem("touch /tmp/pwn"))+"';
+    const result = await tool.handler({ action: "import", item_id: "clip-1", caption_format: payload });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("caption_format must be one of") });
+    // The malicious value must never reach sendCommand, let alone unescaped.
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown caption_format value", async () => {
+    mockedSendCommand.mockClear();
+    const tool = getCaptionTools({}).create_caption_track as any;
+    const result = await tool.handler({ action: "import", item_id: "clip-1", caption_format: "not_a_real_format" });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("caption_format must be one of") });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });
