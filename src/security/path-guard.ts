@@ -237,8 +237,9 @@ export class MediaPathError extends Error {
  * file. Rejects URL/protocol-prefixed values (http:, concat:, subfile:,
  * pipe:, data:, file:, ...) that could make ffmpeg fetch a remote resource or
  * read an unintended local file through a non-`file` protocol (SSRF / path
- * confusion), rejects NUL bytes, and rejects a path through a symlinked
- * segment. This does not apply `PREMIERE_MCP_WRITE_ROOTS`: that allowlist
+ * confusion) and rejects NUL bytes. Symlinked media folders are allowed:
+ * reads are not confined, so refusing them would add no protection. This
+ * does not apply `PREMIERE_MCP_WRITE_ROOTS`: that allowlist
  * confines where this server writes, not every file it may read for analysis.
  */
 export function assertLocalMediaPath(mediaPath: unknown, label = "media_path"): string {
@@ -257,8 +258,6 @@ export function assertLocalMediaPath(mediaPath: unknown, label = "media_path"): 
     throw new MediaPathError(`${label} not found on disk: ${resolved}`);
   }
   if (!stats.isFile()) throw new MediaPathError(`${label} must be an existing regular file: ${resolved}`);
-  const symlinked = findSymlinkedSegment(resolved);
-  if (symlinked) throw new SymlinkPathError(resolved);
   return resolved;
 }
 

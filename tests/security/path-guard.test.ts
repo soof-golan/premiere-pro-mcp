@@ -174,8 +174,8 @@ describe("assertLocalMediaPath (ffmpeg/ffprobe input confinement)", () => {
     expect(() => assertLocalMediaPath(undefined)).toThrow(MediaPathError);
   });
 
-  it("rejects a path through a symlinked directory", () => {
-    expect(() => assertLocalMediaPath(join(linkedDir, "secret.mp4"))).toThrow(SymlinkPathError);
+  it("accepts a file inside a symlinked media folder", () => {
+    expect(assertLocalMediaPath(join(linkedDir, "secret.mp4"))).toBe(join(linkedDir, "secret.mp4"));
   });
 });
 
