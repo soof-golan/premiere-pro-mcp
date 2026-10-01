@@ -326,19 +326,26 @@ premiere-pro-mcp --check-update
 premiere-pro-mcp --update
 ```
 
-`--update` only changes a global npm installation. It installs the published
-`latest` package, refreshes the bundled CEP connector, and leaves your MCP
-client configuration and projects untouched. Restart Premiere and your MCP
-client afterward, then run `verify_premiere_connection` before editing.
+`--update` only changes a global npm installation. It checks npm once, then
+installs exactly the version it just displayed to you (`npm install --global
+premiere-pro-mcp@<x.y.z>`, never an unpinned `@latest`), refreshes the bundled
+CEP connector, and leaves your MCP client configuration and projects
+untouched. Restart Premiere and your MCP client afterward, then run
+`verify_premiere_connection` before editing. Set `PREMIERE_MCP_NO_UPDATE_CHECK=1`
+to skip the automatic check `--check-update` performs; `--update` still works
+when you run it explicitly.
 
 **From the MCP for Adobe Premiere Pro panel (Windows global npm install):**
 
 The **MCP updates** card compares the installed global server and connector
-with npm `latest`. Choose **Update after quit**, review the confirmation, then
-quit Premiere normally. A per-user helper waits for Premiere to exit; it never
-force-quits the app, then installs the published npm package and refreshes its
-matching connector. This also supports older global installs that predate the
-`--update` command.
+with npm `latest` on startup; uncheck **Check for updates automatically on
+startup**, or set `PREMIERE_MCP_NO_UPDATE_CHECK=1` in the environment Premiere
+launches from, to stop that automatic check (a manual **Check again** still
+works). Choose **Update after quit**, review the confirmation, then quit
+Premiere normally. A per-user helper waits for Premiere to exit; it never
+force-quits the app, then installs exactly the version shown in the card
+(never an unpinned `@latest`) and refreshes its matching connector. This also
+supports older global installs that predate the `--update` command.
 When you reopen Premiere, the panel reports the result and reminds you to
 restart your MCP client and verify the connection. This flow never changes a
 project or MCP client configuration. It deliberately will not update a Git
@@ -352,9 +359,18 @@ npm run update:source
 ```
 
 The source updater refuses a checkout with uncommitted files or local commits,
-fast-forwards only to its configured upstream, runs `npm ci` and the production
-build, then refreshes the CEP connector. This avoids silently overwriting local
-code. If you installed the Claude Desktop `.mcpb` bundle, download and install
+prints the commit range it is about to merge (`git log --oneline
+HEAD..upstream`), fast-forwards only to its configured upstream, runs `npm ci`
+and the production build, then refreshes the CEP connector. This avoids
+silently overwriting local code. Pass `--verify-tag` to additionally require
+that the upstream commit is an exact, signed Git tag and run `git verify-tag`
+on it before merging:
+
+```bash
+node scripts/update-source.mjs --verify-tag
+```
+
+If you installed the Claude Desktop `.mcpb` bundle, download and install
 the newer bundle from the GitHub release instead; Claude controls extension
 updates.
 
@@ -1339,6 +1355,7 @@ user/device authorization are implemented.
 | `PREMIERE_DEFAULT_SEQUENCE_PRESET` | Override the auto-discovered `.sqpreset` used by `create_sequence` | auto-discovered |
 | `PREMIERE_MCP_CAPABILITIES` | Comma-separated authority profile; add `unsafe-script` only when raw scripting is required | `inspect,edit,export,filesystem` |
 | `PREMIERE_MCP_DEBUG` | Set to `1` (or `true`) to emit verbose server diagnostics to stderr | unset |
+| `PREMIERE_MCP_NO_UPDATE_CHECK` | Set to `1` (or `true`) to skip the automatic npm registry update check — `premiere-pro-mcp --check-update` and the CEP panel's startup check both honor it; an explicit `--update` or panel "Update after quit" still runs | unset (checks run) |
 | `PREMIERE_CONTEXT_BACKEND` | Local project-context store: `auto`, `sqlite`, `json`, or `memory` | `auto` |
 | `PREMIERE_CONTEXT_DIR` | Override the local project-context storage directory | OS application-data directory |
 | `PORT` | HTTP port (HTTP/SSE transport only) | `3000` |

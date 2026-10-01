@@ -16,7 +16,12 @@ import {
   renderDoctorHuman,
 } from "./diagnostics.js";
 import { applyDoctorRepairPlan } from "./doctor-repairs.js";
-import { compareVersions, fetchLatestNpmVersion } from "./update.js";
+import {
+  buildPinnedGlobalInstallArgs,
+  compareVersions,
+  fetchLatestNpmVersion,
+  isAutomaticUpdateCheckDisabled,
+} from "./update.js";
 import { parseClientConfigAction, renderClientConfig } from "./client-config.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -87,6 +92,13 @@ async function checkForPackageUpdate(): Promise<{ currentVersion: string; latest
 }
 
 async function runPackageUpdate(apply: boolean): Promise<void> {
+  if (!apply && isAutomaticUpdateCheckDisabled()) {
+    console.log(
+      "Update checks are disabled by PREMIERE_MCP_NO_UPDATE_CHECK. Unset it, or run premiere-pro-mcp --update to update anyway.",
+    );
+    return;
+  }
+
   let update;
   try {
     update = await checkForPackageUpdate();
@@ -116,7 +128,8 @@ async function runPackageUpdate(apply: boolean): Promise<void> {
   const npm = npmInvocation();
   console.log(`Updating premiere-pro-mcp ${update.currentVersion} → ${update.latestVersion} and refreshing the Premiere connector...`);
   try {
-    execFileSync(npm.command, [...npm.prefix, "install", "--global", "premiere-pro-mcp@latest"], {
+    const installArgs = buildPinnedGlobalInstallArgs("premiere-pro-mcp", update.latestVersion);
+    execFileSync(npm.command, [...npm.prefix, ...installArgs], {
       stdio: "inherit",
       windowsHide: true,
     });
@@ -176,6 +189,7 @@ Environment variables:
   PREMIERE_MCP_CAPABILITIES  Comma-separated authority profile
   PREMIERE_MCP_TOOL_PACKS    Comma-separated discovery packs: full, essential, inspection, delivery, captions
   PREMIERE_MCP_DEBUG    Set to 1/true to enable verbose stderr diagnostics
+  PREMIERE_MCP_NO_UPDATE_CHECK  Set to 1/true to skip the npm registry check for --check-update (does not block --update)
   PREMIERE_MCP_PROTOCOL_MODE  auto (default) or legacy; use legacy only when a client cannot complete modern MCP negotiation
   PREMIERE_UXP_TOKEN    Enable the authenticated local UXP bridge (minimum 16 characters)
   PREMIERE_UXP_PORT     UXP loopback WebSocket port (default: 7777)

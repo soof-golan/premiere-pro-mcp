@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requested = new Set(process.argv.slice(2));
-const allowed = new Set(["--check"]);
+const allowed = new Set(["--check", "--verify-tag"]);
 const unknown = [...requested].filter((argument) => !allowed.has(argument));
 
 if (unknown.length > 0) {
@@ -92,6 +92,30 @@ try {
 
   if (ahead > 0) {
     fail("this checkout has local commits. Update or merge it manually so no work is overwritten.");
+  }
+
+  const incomingCommits = run("git", ["log", "--oneline", "HEAD..@{upstream}"]);
+  console.log(`Merging ${behind} commit${behind === 1 ? "" : "s"}:`);
+  console.log(incomingCommits || "(no commit summaries available)");
+
+  if (requested.has("--verify-tag")) {
+    let tag;
+    try {
+      tag = run("git", ["describe", "--tags", "--exact-match", "@{upstream}"], {
+        stdio: ["inherit", "pipe", "ignore"],
+      });
+    } catch {
+      tag = "";
+    }
+    if (!tag) {
+      fail("--verify-tag was passed but @{upstream} is not an exact tag.");
+    }
+    try {
+      runInherited("git", ["verify-tag", tag]);
+    } catch {
+      fail(`could not verify the signature of tag ${tag}.`);
+    }
+    console.log(`Verified signed tag ${tag}.`);
   }
 
   console.log("Updating source, dependencies, build output, and the Premiere connector...");

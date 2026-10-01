@@ -120,7 +120,48 @@ function defaultBridgeDirectory() {
 tempDir = defaultBridgeDirectory();
 var latestUpdate = null;
 var UPDATE_STATUS_STORAGE_KEY = "mcp_bridge_desktop_update_status_path";
+var NO_UPDATE_CHECK_STORAGE_KEY = "mcp_bridge_no_update_check";
 var MAX_UPDATE_RESPONSE_BYTES = 64 * 1024;
+
+// ---- Automatic update check opt-out ----
+// Default stays ON (current behavior). PREMIERE_MCP_NO_UPDATE_CHECK is an
+// environment-level override and always wins; the localStorage toggle is a
+// per-panel preference the user can flip from the panel itself.
+function envDisablesUpdateCheck() {
+  try {
+    var nodeProcess = nodeRequire("process");
+    return /^(1|true|yes|on)$/i.test(String((nodeProcess && nodeProcess.env && nodeProcess.env.PREMIERE_MCP_NO_UPDATE_CHECK) || ""));
+  } catch (e) {
+    return false;
+  }
+}
+
+function isAutomaticUpdateCheckDisabled() {
+  if (envDisablesUpdateCheck()) return true;
+  try {
+    return localStorage.getItem(NO_UPDATE_CHECK_STORAGE_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
+function syncAutoUpdateCheckToggle() {
+  var checkbox = document.getElementById("autoUpdateCheck");
+  if (!checkbox) return;
+  checkbox.checked = !isAutomaticUpdateCheckDisabled();
+  if (envDisablesUpdateCheck()) {
+    checkbox.disabled = true;
+    checkbox.title = "Disabled by the PREMIERE_MCP_NO_UPDATE_CHECK environment variable.";
+  }
+}
+
+function handleAutoUpdateCheckToggle() {
+  var checkbox = document.getElementById("autoUpdateCheck");
+  if (!checkbox) return;
+  try {
+    localStorage.setItem(NO_UPDATE_CHECK_STORAGE_KEY, checkbox.checked ? "0" : "1");
+  } catch (e) {}
+}
 
 function getPerUserGlobalInstall() {
   try {
@@ -647,6 +688,7 @@ function handleUpdateClick() {
     var nodeCrypto = nodeRequire("crypto");
     var scheduled = MCPBridgeUpdater.scheduleWindowsGlobalUpdate({
       cliPath: cliPath,
+      version: latestUpdate.version,
       runtime: {
         fs: fs,
         path: path,
@@ -698,5 +740,18 @@ function handleUpdateClick() {
   startBridgeHeartbeat();
   log("Auto-starting bridge...");
   setTimeout(startBridge, 500);
-  if (!restoreScheduledUpdateStatus()) setTimeout(checkForUpdates, 1200);
+
+  syncAutoUpdateCheckToggle();
+  if (!restoreScheduledUpdateStatus()) {
+    if (isAutomaticUpdateCheckDisabled()) {
+      setUpdateUI(
+        "Version " + MCPBridgeUpdater.CURRENT_VERSION,
+        "Automatic update checks are turned off.",
+        "Check now",
+        false
+      );
+    } else {
+      setTimeout(checkForUpdates, 1200);
+    }
+  }
 })();

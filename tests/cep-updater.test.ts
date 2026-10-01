@@ -51,22 +51,40 @@ describe("CEP connector updater", () => {
       .toThrow("valid latest version");
   });
 
-  it("creates a detached Windows updater that waits for Premiere instead of closing it", () => {
+  it("creates a detached Windows updater pinned to the exact displayed version", () => {
     const scriptPath = "C:\\Temp\\premiere-pro-mcp-update-abc.ps1";
     const statusPath = "C:\\Temp\\premiere-pro-mcp-update-abc.json";
     const cliPath = "C:\\Users\\editor\\AppData\\Roaming\\npm\\premiere-pro-mcp.cmd";
-    const script = updater.buildWindowsGlobalUpdateScript(cliPath, statusPath, scriptPath);
+    const script = updater.buildWindowsGlobalUpdateScript(cliPath, statusPath, scriptPath, "1.18.7");
 
     expect(script).toContain("while (Get-Process -Name $premiereProcesses");
     expect(script).toContain("Start-Sleep -Seconds 2");
     expect(script).toContain("Get-Command npm.cmd");
-    expect(script).toContain("& $npmCommand install --global 'premiere-pro-mcp@latest'");
+    expect(script).toContain("$packageSpec = 'premiere-pro-mcp@1.18.7'");
+    expect(script).toContain("& $npmCommand install --global $packageSpec");
+    expect(script).not.toContain("@latest");
     expect(script).toContain("& $cliPath --install-cep");
     expect(script).toContain("premiere-pro-mcp.desktop-update.v1");
     expect(script).not.toContain("Stop-Process");
   });
 
-  it("schedules only an existing absolute per-user command and cleans up if launch fails", () => {
+  it("rejects building an update script for anything but an exact x.y.z version", () => {
+    expect(() => updater.buildWindowsGlobalUpdateScript("C:\\cli.cmd", "C:\\s.json", "C:\\s.ps1", "latest"))
+      .toThrow("exact x.y.z release");
+    expect(() => updater.buildWindowsGlobalUpdateScript("C:\\cli.cmd", "C:\\s.json", "C:\\s.ps1", "1.18.7; rm -rf /"))
+      .toThrow("exact x.y.z release");
+    expect(() => updater.buildWindowsGlobalUpdateScript("C:\\cli.cmd", "C:\\s.json", "C:\\s.ps1", undefined))
+      .toThrow("exact x.y.z release");
+  });
+
+  it("validates strict x.y.z versions", () => {
+    expect(updater.isStrictSemver("1.18.7")).toBe(true);
+    expect(updater.isStrictSemver("1.18.7-beta")).toBe(false);
+    expect(updater.isStrictSemver("latest")).toBe(false);
+    expect(updater.isStrictSemver("^1.18.7")).toBe(false);
+  });
+
+  it("schedules only an existing absolute per-user command, pinned to the checked version, and cleans up if launch fails", () => {
     const writes = new Map<string, string>();
     const unref = vi.fn();
     const spawn = vi.fn(() => ({ unref }));
@@ -83,11 +101,11 @@ describe("CEP connector updater", () => {
       crypto: { randomBytes: () => Buffer.from("abcdef", "hex") },
     };
     const cliPath = "C:\\Users\\editor\\AppData\\Roaming\\npm\\premiere-pro-mcp.cmd";
-    const scheduled = updater.scheduleWindowsGlobalUpdate({ cliPath, runtime });
+    const scheduled = updater.scheduleWindowsGlobalUpdate({ cliPath, version: "1.18.7", runtime });
 
     expect(scheduled.statusPath).toBe("C:\\Temp\\premiere-pro-mcp-update-abcdef.json");
     expect(writes.get("C:\\Temp\\premiere-pro-mcp-update-abcdef.ps1"))
-      .toContain("& $npmCommand install --global 'premiere-pro-mcp@latest'");
+      .toContain("$packageSpec = 'premiere-pro-mcp@1.18.7'");
     expect(spawn).toHaveBeenCalledWith(
       "powershell.exe",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Temp\\premiere-pro-mcp-update-abcdef.ps1"],
@@ -95,14 +113,17 @@ describe("CEP connector updater", () => {
     );
     expect(unref).toHaveBeenCalledOnce();
 
-    expect(() => updater.scheduleWindowsGlobalUpdate({ cliPath: "relative.cmd", runtime }))
+    expect(() => updater.scheduleWindowsGlobalUpdate({ cliPath: "relative.cmd", version: "1.18.7", runtime }))
       .toThrow("could not be resolved");
+
+    expect(() => updater.scheduleWindowsGlobalUpdate({ cliPath, version: "latest", runtime }))
+      .toThrow("exact x.y.z release");
 
     const failingRuntime = {
       ...runtime,
       childProcess: { spawn: vi.fn(() => { throw new Error("launch failed"); }) },
     };
-    expect(() => updater.scheduleWindowsGlobalUpdate({ cliPath, runtime: failingRuntime }))
+    expect(() => updater.scheduleWindowsGlobalUpdate({ cliPath, version: "1.18.7", runtime: failingRuntime }))
       .toThrow("launch failed");
     expect(runtime.fs.unlinkSync).toHaveBeenCalled();
   });

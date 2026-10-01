@@ -3,6 +3,35 @@ import https from "node:https";
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const MAX_REGISTRY_RESPONSE_BYTES = 64 * 1024;
 
+/** Strict `x.y.z` form only: no ranges, dist-tags, pre-release/build metadata, or shell metacharacters. */
+const STRICT_SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
+
+/** True only for an exact, numeric `x.y.z` version safe to interpolate into an `npm install` package spec. */
+export function isStrictSemver(value: unknown): value is string {
+  return typeof value === "string" && STRICT_SEMVER_PATTERN.test(value);
+}
+
+/**
+ * Builds the `npm install --global <name>@<version>` argument array for an exact, already-displayed
+ * version. Throws rather than silently falling back to a `latest`/range/tag install.
+ */
+export function buildPinnedGlobalInstallArgs(packageName: string, version: string): string[] {
+  if (!packageName || /[^a-z0-9._/@-]/i.test(packageName)) {
+    throw new Error("The package name is invalid.");
+  }
+  if (!isStrictSemver(version)) {
+    throw new Error("The update version must be an exact x.y.z release, not a range or tag.");
+  }
+  return ["install", "--global", `${packageName}@${version}`];
+}
+
+/** Honors the same opt-out the CEP panel's automatic update check respects. */
+export function isAutomaticUpdateCheckDisabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return /^(1|true|yes|on)$/i.test(env.PREMIERE_MCP_NO_UPDATE_CHECK ?? "");
+}
+
 export function normalizeVersion(value: unknown): string | undefined {
   const match = String(value ?? "")
     .trim()
