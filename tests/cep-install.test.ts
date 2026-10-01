@@ -58,6 +58,7 @@ describe("CEP installation metadata", () => {
 
     expect(packageJson.files).toContain("artifacts/MCPBridgeCEP.zxp");
     expect(signer).toContain("-selfSignedCert");
+    expect(signer).toContain("-tsa");
     expect(signer).toContain("-verify");
     expect(workflow).toContain("build-signed-cep");
     expect(workflow).toContain("signed-cep");
@@ -114,8 +115,38 @@ describe("CEP installation metadata", () => {
 
     expect(cli).toContain("--uninstall-cep");
     expect(windows).toContain("Refusing to uninstall outside the CEP extensions directory");
-    expect(windows).toContain("PlayerDebugMode settings were left unchanged");
+    expect(windows).toContain("leaving PlayerDebugMode unchanged");
     expect(macos).toContain("--uninstall-system");
-    expect(macos).toContain("PlayerDebugMode setting was left unchanged");
+    expect(macos).toContain("leaving PlayerDebugMode unchanged");
+  });
+
+  it("only enables PlayerDebugMode where it is not already set, and records a restorable baseline", () => {
+    const installSh = readFileSync(join(root, "scripts", "install-cep.sh"), "utf8");
+    const installPs1 = readFileSync(join(root, "scripts", "install-cep.ps1"), "utf8");
+
+    expect(installSh).toContain("disables CEP extension");
+    expect(installSh).toContain(".premiere-pro-mcp-player-debug-mode.state");
+    expect(installSh).toContain('if [ "$current" != "1" ]');
+
+    expect(installPs1).toContain("disables CEP extension signature verification");
+    expect(installPs1).toContain(".premiere-pro-mcp-player-debug-mode.state.json");
+    expect(installPs1).toContain("Signed package in use; PlayerDebugMode was not changed.");
+  });
+
+  it("restores the recorded PlayerDebugMode baseline on uninstall, or explains how to reset manually", () => {
+    const uninstallSh = readFileSync(join(root, "scripts", "uninstall-cep.sh"), "utf8");
+    const uninstallPs1 = readFileSync(join(root, "scripts", "uninstall-cep.ps1"), "utf8");
+    const installerCs = readFileSync(join(root, "installer", "windows", "Program.cs"), "utf8");
+
+    expect(uninstallSh).toContain("restore_player_debug_mode");
+    expect(uninstallSh).toContain("No PlayerDebugMode baseline was recorded");
+    expect(uninstallSh).toContain("defaults delete");
+
+    expect(uninstallPs1).toContain(".premiere-pro-mcp-player-debug-mode.state.json");
+    expect(uninstallPs1).toContain("No PlayerDebugMode baseline was recorded");
+
+    expect(installerCs).toContain("RestorePlayerDebugMode");
+    expect(installerCs).toContain("PlayerDebugModeStateFile");
+    expect(installerCs).toContain("no baseline was recorded");
   });
 });

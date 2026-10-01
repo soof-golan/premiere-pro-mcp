@@ -47,7 +47,9 @@ try {
   if (Test-Path -LiteralPath $OutputPath) {
     Remove-Item -LiteralPath $OutputPath -Force
   }
-  & $ZxpSignCmdPath -sign $pluginSource $OutputPath $CertificatePath $CertificatePassword
+  # Timestamp the signature so it stays valid after the self-signed certificate
+  # expires; the Windows installer relies on it instead of PlayerDebugMode.
+  & $ZxpSignCmdPath -sign $pluginSource $OutputPath $CertificatePath $CertificatePassword -tsa "http://timestamp.digicert.com"
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputPath)) {
     throw "ZXPSignCmd failed to create $OutputPath"
   }

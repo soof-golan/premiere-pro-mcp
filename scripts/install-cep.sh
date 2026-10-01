@@ -98,13 +98,47 @@ fi
 
 echo ""
 
-# Enable CEP debug mode (allows unsigned extensions)
+# Enable CEP debug mode. This is required because this script installs the
+# unsigned, folder-based extension bundle (a symlink or a plain directory
+# copy), which Premiere only loads when the matching CSXS.N PlayerDebugMode
+# value is set.
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  echo "Enabling CEP debug mode..."
+  STATE_FILE="$CEP_DIR/.premiere-pro-mcp-player-debug-mode.state"
+
+  echo "WARNING: enabling Adobe's PlayerDebugMode disables CEP extension"
+  echo "signature verification for ALL CEP extensions for this user, not just"
+  echo "this one. It is required to load this unsigned, folder-based connector."
+  echo ""
+
+  if [ -f "$STATE_FILE" ]; then
+    echo "Reusing the PlayerDebugMode baseline already recorded at $STATE_FILE"
+  else
+    echo "Recording current PlayerDebugMode values before changing anything..."
+    : > "$STATE_FILE"
+    for version in 8 9 10 11 12 13 14; do
+      if current="$(defaults read com.adobe.CSXS.$version PlayerDebugMode 2>/dev/null)"; then
+        echo "CSXS.$version=1:$current" >> "$STATE_FILE"
+      else
+        echo "CSXS.$version=0:" >> "$STATE_FILE"
+      fi
+    done
+  fi
+
+  echo "Enabling CEP debug mode where it is not already set..."
+  changed=0
   for version in 8 9 10 11 12 13 14; do
-    defaults write com.adobe.CSXS.$version PlayerDebugMode 1 2>/dev/null || true
+    current="$(defaults read com.adobe.CSXS.$version PlayerDebugMode 2>/dev/null || true)"
+    if [ "$current" != "1" ]; then
+      defaults write com.adobe.CSXS.$version PlayerDebugMode 1 2>/dev/null || true
+      changed=1
+    fi
   done
-  echo "CEP debug mode enabled for CSXS 8-14"
+  if [ "$changed" -eq 1 ]; then
+    echo "CEP debug mode enabled for CSXS 8-14 where needed."
+  else
+    echo "CEP debug mode was already enabled for CSXS 8-14; nothing changed."
+  fi
+  echo "Run uninstall-cep.sh to restore the PlayerDebugMode values recorded above."
 fi
 
 echo ""
