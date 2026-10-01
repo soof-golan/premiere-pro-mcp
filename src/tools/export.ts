@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { parseEbur128Summary } from "./audio.js";
+import { assertWritePathAllowed, FFMPEG_PROTOCOL_WHITELIST_ARGS, assertLocalMediaPath } from "../security/path-guard.js";
 
 const execFileAsync = promisify(execFile);
 const VIDEO_QC_TIMEOUT_MS = 300_000;
@@ -606,13 +607,15 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         if (!Number.isFinite(freezeSeconds) || freezeSeconds <= 0 || freezeSeconds > 60) {
           return { success: false, error: "minimum_freeze_seconds must be a finite value greater than 0 and at most 60" };
         }
-        const mediaPath = resolve(args.media_path);
-        if (!existsSync(mediaPath) || !statSync(mediaPath).isFile()) {
-          return { success: false, error: `Video file not found on disk: ${mediaPath}` };
+        let mediaPath: string;
+        try {
+          mediaPath = assertLocalMediaPath(args.media_path);
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
         try {
           const result = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-i", mediaPath,
+            "-nostdin", "-hide_banner", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", mediaPath,
             "-vf", `blackdetect=d=${blackSeconds}:pix_th=0.10,freezedetect=n=-50dB:d=${freezeSeconds}`,
             "-an", "-f", "null", "-",
           ], { timeout: VIDEO_QC_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
@@ -656,11 +659,15 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         if (!Number.isFinite(threshold) || threshold < 0.01 || threshold > 1) return { success: false, error: "threshold must be from 0.01 through 1" };
         if (!Number.isFinite(minimumInterval) || minimumInterval < 0 || minimumInterval > 60) return { success: false, error: "minimum_interval_seconds must be from 0 through 60" };
         if (!Number.isInteger(maximumEvents) || maximumEvents < 1 || maximumEvents > 2000) return { success: false, error: "maximum_events must be an integer from 1 through 2000" };
-        const mediaPath = resolve(args.media_path);
-        if (!existsSync(mediaPath) || !statSync(mediaPath).isFile()) return { success: false, error: `Video file not found on disk: ${mediaPath}` };
+        let mediaPath: string;
+        try {
+          mediaPath = assertLocalMediaPath(args.media_path);
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         try {
           const result = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-i", mediaPath,
+            "-nostdin", "-hide_banner", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", mediaPath,
             "-vf", `select='gt(scene,${threshold})',showinfo,metadata=print`,
             "-an", "-f", "null", "-",
           ], { timeout: VIDEO_QC_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
@@ -733,11 +740,17 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) {
           return { success: false, error: "timeout_minutes must be between 1 and 240" };
         }
+        let guardedOutputPath: string;
+        try {
+          guardedOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          
-          var outputPath = "${escapeForExtendScript(args.output_path)}";
+
+          var outputPath = "${escapeForExtendScript(guardedOutputPath)}";
           
           ${args.preset_path
             ? `var presetPath = "${escapeForExtendScript(args.preset_path)}";`
@@ -828,8 +841,14 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         required: ["output_path"],
       },
       handler: async (args: { output_path: string; time_seconds?: number }) => {
+        let guardedOutputPath: string;
+        try {
+          guardedOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
-          var outputPath = "${escapeForExtendScript(args.output_path)}";
+          var outputPath = "${escapeForExtendScript(guardedOutputPath)}";
           var ticks = ${args.time_seconds !== undefined
             ? `__secondsToTicks(${args.time_seconds}).toString()`
             : "null"};
@@ -890,11 +909,17 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           return { success: false, error: "end_seconds must be greater than start_seconds" };
         }
 
+        let guardedOutputDir: string;
+        try {
+          guardedOutputDir = assertWritePathAllowed(resolve(args.output_dir), "output_dir");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
 
-          var outputFolder = new Folder("${escapeForExtendScript(resolve(args.output_dir))}");
+          var outputFolder = new Folder("${escapeForExtendScript(guardedOutputDir)}");
           if (!outputFolder.exists) return __error("Output directory does not exist: " + outputFolder.fsName);
 
           var sequenceEndSeconds = __ticksToSeconds(seq.end);
@@ -999,10 +1024,16 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           return { success: false, error: "end_seconds must be greater than start_seconds" };
         }
 
+        let guardedOutputDir: string;
+        try {
+          guardedOutputDir = assertWritePathAllowed(resolve(args.output_dir), "output_dir");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          var outputFolder = new Folder("${escapeForExtendScript(resolve(args.output_dir))}");
+          var outputFolder = new Folder("${escapeForExtendScript(guardedOutputDir)}");
           if (!outputFolder.exists) return __error("Output directory does not exist: " + outputFolder.fsName);
 
           var sequenceEndSeconds = __ticksToSeconds(seq.end);
@@ -1090,11 +1121,17 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         if (typeof args.output_dir !== "string" || !args.output_dir.trim()) {
           return { success: false, error: "output_dir must be a non-empty directory path" };
         }
+        let guardedOutputDir: string;
+        try {
+          guardedOutputDir = assertWritePathAllowed(resolve(args.output_dir), "output_dir");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
           if (${trackIndex} >= seq.videoTracks.numTracks) return __error("Video track index is out of range");
-          var outputFolder = new Folder("${escapeForExtendScript(resolve(args.output_dir))}");
+          var outputFolder = new Folder("${escapeForExtendScript(guardedOutputDir)}");
           if (!outputFolder.exists) return __error("Output directory does not exist: " + outputFolder.fsName);
           var track = seq.videoTracks[${trackIndex}];
           var frames = [];
@@ -1135,10 +1172,16 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         required: ["output_path"],
       },
       handler: async (args: { output_path: string }) => {
+        let guardedOutputPath: string;
+        try {
+          guardedOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          var outputFile = new File("${escapeForExtendScript(args.output_path)}");
+          var outputFile = new File("${escapeForExtendScript(guardedOutputPath)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
             return __error("The FCP XML export directory does not exist: " + outputFile.parent);
           }
@@ -1226,15 +1269,17 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             error: "preset_path is required. Pass a .epr file; omitting it falls through to an Illegal Parameter error on this host.",
           };
         }
+        let guardedOutputPath: string;
         try {
           inspectExportPresetFile(args.preset_path);
+          guardedOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
         } catch (error) {
           return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          
+
           var encoder = app.encoder;
           if (!encoder) return __error("Adobe Media Encoder not available");
           var savedProjectPath = "";
@@ -1245,7 +1290,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           
           encoder.launchEncoder();
           
-          var outputFile = new File("${escapeForExtendScript(args.output_path)}");
+          var outputFile = new File("${escapeForExtendScript(guardedOutputPath)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
             return __error("The requested AME output directory does not exist: " + outputFile.parent);
           }
@@ -1470,10 +1515,16 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         handle_frames?: number;
         include_pan?: boolean;
       }) => {
+        let guardedOutputPath: string;
+        try {
+          guardedOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          var outputFile = new File("${escapeForExtendScript(args.output_path)}");
+          var outputFile = new File("${escapeForExtendScript(guardedOutputPath)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
             return __error("The OMF output directory does not exist: " + outputFile.parent);
           }
@@ -1532,6 +1583,12 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         preset_path: string;
         remove_on_completion?: boolean;
       }) => {
+        let guardedOutputPath: string;
+        try {
+          guardedOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Project item not found: ${escapeForExtendScript(args.item_id)}");
@@ -1540,7 +1597,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           if (!savedProjectPath || savedProjectPath === "undefined") {
             return __error("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
           }
-          var outputFile = new File("${escapeForExtendScript(args.output_path)}");
+          var outputFile = new File("${escapeForExtendScript(guardedOutputPath)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
             return __error("The requested AME output directory does not exist: " + outputFile.parent);
           }
@@ -1621,6 +1678,12 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         }
         const inSeconds = args.in_seconds ?? 0;
         const outSeconds = args.out_seconds ?? 0;
+        let guardedOutputPath: string;
+        try {
+          guardedOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
 
         const script = buildToolScript(`
           var inputFile = new File("${escapeForExtendScript(args.input_path)}");
@@ -1630,7 +1693,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           if (!savedProjectPath || savedProjectPath === "undefined") {
             return __error("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
           }
-          var outputFile = new File("${escapeForExtendScript(args.output_path)}");
+          var outputFile = new File("${escapeForExtendScript(guardedOutputPath)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
             return __error("The requested AME output directory does not exist: " + outputFile.parent);
           }
@@ -1745,6 +1808,14 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           }
         }
         const autoDiscovered = presetPath !== args.preset_path;
+        let guardedProxyOutputPath: string | undefined;
+        if (args.output_path) {
+          try {
+            guardedProxyOutputPath = assertWritePathAllowed(resolve(args.output_path), "output_path");
+          } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        }
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
@@ -1754,7 +1825,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           if (action === "create") {
             ${!args.output_path
               ? `return __error("output_path is required for the 'create' action");`
-              : `var outputPath = "${escapeForExtendScript(args.output_path)}";
+              : `var outputPath = "${escapeForExtendScript(guardedProxyOutputPath!)}";
                  var presetPath = "${escapeForExtendScript(presetPath ?? "")}";
 
                  // ProjectItem has no createProxy(). Proxy generation must go through

@@ -694,7 +694,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           record_start_seconds: { type: "number", minimum: 0, maximum: 86400, description: "Record timecode origin in seconds (default: the sequence zero point)." },
           include_clip_name_comments: { type: "boolean", description: "Emit '* FROM CLIP NAME:' comments (default true)." },
           output_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Optional absolute .edl path to write. Requires approved_workspace_path; the file must not already exist. When omitted the EDL text is returned inline." },
-          approved_workspace_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Absolute existing directory that must contain output_path. Required with output_path." },
+          approved_workspace_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Absolute existing directory that must contain output_path. Required with output_path. This argument is caller-supplied and is not a security boundary by itself; when the operator has set PREMIERE_MCP_WRITE_ROOTS, both this directory and output_path must also resolve inside it." },
         },
       },
       handler: async (args: {

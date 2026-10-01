@@ -18,6 +18,7 @@ import {
   type BridgeOptions,
   type CommandResult,
 } from "../bridge/file-bridge.js";
+import { assertWritePathAllowed } from "../security/path-guard.js";
 
 const MAX_CANDIDATES = 50;
 const DEFAULT_PROJECT_BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
@@ -139,6 +140,7 @@ export async function createProjectBackup(
 
     const stamp = now.toISOString().replace(/[:.]/g, "-");
     backupPath = `${sourcePath}.backup-${stamp}`;
+    backupPath = assertWritePathAllowed(backupPath, "project_path");
     const backupHandle = await open(backupPath, "wx", before.mode & 0o777);
     backupCreated = true;
     let copiedBytes = 0;

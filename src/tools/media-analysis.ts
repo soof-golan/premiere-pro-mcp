@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { BridgeOptions } from "../bridge/file-bridge.js";
+import { assertLocalMediaPath, assertWritePathAllowed, FFMPEG_PROTOCOL_WHITELIST_ARGS } from "../security/path-guard.js";
 
 const execFileAsync = promisify(execFile);
 const ANALYSIS_TIMEOUT_MS = 300_000;
@@ -11,8 +12,11 @@ type ExecFailure = Error & { killed?: boolean; stderr?: string | Buffer };
 
 function inputPath(value: unknown): string | null {
   if (typeof value !== "string" || value.trim() === "") return null;
-  const path = resolve(value);
-  return existsSync(path) && statSync(path).isFile() ? path : null;
+  try {
+    return assertLocalMediaPath(value);
+  } catch {
+    return null;
+  }
 }
 
 function failureMessage(error: unknown, operation: string, timeoutSeconds = 300): string {
@@ -150,7 +154,7 @@ export function compareScopeReadings(reference: VideoScopeReading, target: Video
 }
 
 async function decodeScopeFrame(path: string, time: number): Promise<VideoScopeReading> {
-  const result = await execFileAsync("ffmpeg", ["-v", "error", "-ss", String(time), "-i", path, "-frames:v", "1", "-vf", "scale=320:180:flags=area", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], { encoding: "buffer", timeout: 60_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }) as unknown as { stdout: Buffer };
+  const result = await execFileAsync("ffmpeg", ["-v", "error", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-ss", String(time), "-i", path, "-frames:v", "1", "-vf", "scale=320:180:flags=area", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], { encoding: "buffer", timeout: 60_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }) as unknown as { stdout: Buffer };
   if (result.stdout.length !== 320 * 180 * 3) throw new Error("ffmpeg did not return one complete RGB scope frame");
   return analyzeRgbScopes(result.stdout);
 }
@@ -197,7 +201,7 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
         const path = inputPath(args.media_path);
         if (!path) return { success: false, error: "media_path must identify an existing regular file" };
         try {
-          const { stdout } = await execFileAsync("ffprobe", ["-v", "error", "-show_format", "-show_streams", "-show_chapters", "-of", "json", path], { timeout: 60_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+          const { stdout } = await execFileAsync("ffprobe", ["-v", "error", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-show_format", "-show_streams", "-show_chapters", "-of", "json", path], { timeout: 60_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
           const data = parseMediaProbeJson(stdout);
           return { success: true, data: { mediaPath: path, ...data, streamCount: data.streams.length } };
         } catch (error) { return { success: false, error: failureMessage(error, "ffprobe media inspection") }; }
@@ -216,18 +220,24 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
         const path = inputPath(args.media_path);
         if (!path) return { success: false, error: "media_path must identify an existing regular file" };
         if (typeof args.output_path !== "string" || extname(args.output_path).toLowerCase() !== ".png") return { success: false, error: "output_path must be a new .png file" };
-        const outputPath = resolve(args.output_path);
-        if (existsSync(outputPath)) return { success: false, error: "output_path already exists; contact sheets never overwrite files" };
+        const outputPathRaw = resolve(args.output_path);
+        if (existsSync(outputPathRaw)) return { success: false, error: "output_path already exists; contact sheets never overwrite files" };
+        let outputPath: string;
+        try {
+          outputPath = assertWritePathAllowed(outputPathRaw, "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const columns = args.columns ?? 4, rows = args.rows ?? 3, width = args.thumbnail_width ?? 320;
         if (![columns, rows].every(v => Number.isInteger(v) && v >= 2 && v <= 8)) return { success: false, error: "columns and rows must be integers from 2 through 8" };
         if (!Number.isInteger(width) || width < 160 || width > 1280) return { success: false, error: "thumbnail_width must be an integer from 160 through 1280" };
         try {
-          const probe = await execFileAsync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path], { timeout: 60_000, windowsHide: true });
+          const probe = await execFileAsync("ffprobe", ["-v", "error", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path], { timeout: 60_000, windowsHide: true });
           const duration = Number(probe.stdout.trim());
           if (!Number.isFinite(duration) || duration <= 0) return { success: false, error: "ffprobe did not return a positive media duration" };
           const frames = columns * rows;
           const interval = Math.max(duration / frames, 0.04);
-          await execFileAsync("ffmpeg", ["-v", "error", "-i", path, "-vf", `fps=1/${interval},scale=${width}:-1,tile=${columns}x${rows}`, "-frames:v", "1", outputPath], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+          await execFileAsync("ffmpeg", ["-v", "error", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", path, "-vf", `fps=1/${interval},scale=${width}:-1,tile=${columns}x${rows}`, "-frames:v", "1", outputPath], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
           if (!existsSync(outputPath) || !statSync(outputPath).isFile() || statSync(outputPath).size < 1) return { success: false, error: "ffmpeg completed without creating a non-empty contact sheet" };
           return { success: true, data: { mediaPath: path, outputPath, grid: { columns, rows, requestedFrames: frames }, thumbnailWidth: width, sizeBytes: statSync(outputPath).size, outputDirectory: dirname(outputPath), verified: true } };
         } catch (error) { return { success: false, error: failureMessage(error, "contact-sheet generation") }; }
@@ -249,7 +259,7 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
         if (!Number.isFinite(interval) || interval < 0.05 || interval > 10) return { success: false, error: "minimum_interval_seconds must be from 0.05 through 10" };
         if (!Number.isInteger(maximum) || maximum < 1 || maximum > 1000) return { success: false, error: "maximum_events must be an integer from 1 through 1000" };
         try {
-          const result = await execFileAsync("ffmpeg", ["-v", "info", "-i", path, "-vn", "-af", "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
+          const result = await execFileAsync("ffmpeg", ["-v", "info", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", path, "-vn", "-af", "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
           const all = parseTransientCandidates(`${result.stdout}\n${result.stderr}`, threshold, interval);
           return { success: true, data: { mediaPath: path, thresholdDbfs: threshold, minimumIntervalSeconds: interval, totalDetected: all.length, truncated: all.length > maximum, candidates: all.slice(0, maximum), verificationScope: "Peak-derived transient candidates only; confirm rhythm and editorial suitability by listening." } };
         } catch (error) { return { success: false, error: failureMessage(error, "audio transient analysis") }; }
@@ -277,7 +287,7 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
         if (!Number.isInteger(maximum) || maximum < 1 || maximum > 1000) return { success: false, error: "maximum_events must be an integer from 1 through 1000" };
         try {
           const filter = `fps=${rate},scale=160:-2:flags=area,format=gray,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG`;
-          const result = await execFileAsync("ffmpeg", ["-v", "info", "-i", path, "-t", String(seconds), "-vf", filter, "-an", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
+          const result = await execFileAsync("ffmpeg", ["-v", "info", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", path, "-t", String(seconds), "-vf", filter, "-an", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
           const all = parseMotionPeakCandidates(`${result.stdout}\n${result.stderr}`, threshold, interval);
           return { success: true, data: {
             mediaPath: path, sampleSeconds: seconds, samplesPerSecond: rate, threshold,
@@ -344,7 +354,7 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
         const seconds = args.sample_seconds ?? 30;
         if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) return { success: false, error: "sample_seconds must be from 1 through 300" };
         try {
-          const result = await execFileAsync("ffmpeg", ["-v", "info", "-i", path, "-t", String(seconds), "-vf", "idet", "-an", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+          const result = await execFileAsync("ffmpeg", ["-v", "info", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", path, "-t", String(seconds), "-vf", "idet", "-an", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
           const analysis = parseIdetOutput(`${result.stdout}\n${result.stderr}`);
           return { success: true, data: { mediaPath: path, sampleSeconds: seconds, ...analysis, passesProgressiveDelivery: analysis.classification === "progressive", verificationScope: "Decoded sample only; mixed and undetermined results require visual or scope review." } };
         } catch (error) { return { success: false, error: failureMessage(error, "interlace analysis") }; }
@@ -360,7 +370,7 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
         if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) return { success: false, error: "sample_seconds must be from 1 through 300" };
         if (!Number.isInteger(limit) || limit < 0 || limit > 255) return { success: false, error: "limit must be an integer from 0 through 255" };
         try {
-          const result = await execFileAsync("ffmpeg", ["-v", "info", "-i", path, "-t", String(seconds), "-vf", `cropdetect=limit=${limit}:round=2:reset=0`, "-an", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+          const result = await execFileAsync("ffmpeg", ["-v", "info", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", path, "-t", String(seconds), "-vf", `cropdetect=limit=${limit}:round=2:reset=0`, "-an", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
           const bounds = parseCropDetectOutput(`${result.stdout}\n${result.stderr}`);
           if (!bounds) return { success: false, error: "cropdetect returned no active-picture measurements" };
           return { success: true, data: { mediaPath: path, sampleSeconds: seconds, limit, activePicture: bounds, verificationScope: "Most frequent decoded crop candidate; intentional borders and dark scenes require visual review." } };

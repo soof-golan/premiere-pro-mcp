@@ -1,5 +1,5 @@
-import { lstatSync, readlinkSync } from "node:fs";
-import { posix, win32 } from "node:path";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import nodePath, { posix, win32 } from "node:path";
 
 /**
  * Server-side symlink confinement for UXP path arguments (issue #640).
@@ -93,3 +93,173 @@ export function assertNoSymlinkedPaths(args: unknown): void {
     if (findSymlinkedSegment(value)) throw new SymlinkPathError(argumentPath || "path");
   }
 }
+
+/**
+ * Operator-configured server-side write confinement (hardening follow-up to
+ * #640). `PREMIERE_MCP_WRITE_ROOTS` is a path.delimiter-separated allowlist of
+ * directories this server may write, overwrite, or delete files inside. It is
+ * optional: unset, every disk-writing tool keeps its current behavior exactly
+ * (backward compatible). Set, every writer below is confined to the roots,
+ * regardless of what a tool argument claims. In particular a model-supplied
+ * "approved_workspace_path" (caption/EDL export) is NOT a security boundary by
+ * itself -- it is just another argument the model can set to anything -- so
+ * when roots are configured, approved_workspace_path must also resolve inside
+ * them.
+ */
+export const WRITE_ROOTS_ENV_VAR = "PREMIERE_MCP_WRITE_ROOTS";
+
+export class WriteRootViolationError extends Error {
+  readonly code = "WRITE_PATH_OUTSIDE_ALLOWED_ROOTS";
+  constructor(readonly targetPath: string, readonly roots: readonly string[]) {
+    super(
+      `${targetPath} is outside the directories allowed by ${WRITE_ROOTS_ENV_VAR} (${roots.join(nodePath.delimiter)}). ` +
+      `A model-supplied path argument such as "approved_workspace_path" is not a security boundary by itself; only the ` +
+      `operator-configured ${WRITE_ROOTS_ENV_VAR} is. No file was written.`,
+    );
+    this.name = "WriteRootViolationError";
+  }
+}
+
+function normalizeForCompare(value: string): string {
+  const normalized = nodePath.normalize(value);
+  return process.platform === "win32" || process.platform === "darwin" ? normalized.toLowerCase() : normalized;
+}
+
+function resolveRootForCompare(root: string): string | null {
+  const trimmed = root.trim();
+  if (!trimmed) return null;
+  let real: string;
+  try { real = realpathSync(trimmed); } catch { real = nodePath.resolve(trimmed); }
+  return normalizeForCompare(real);
+}
+
+let cachedRootsEnv: string | undefined;
+let cachedRoots: string[] | null = null;
+
+/** Parses `PREMIERE_MCP_WRITE_ROOTS`; returns null when unset or empty (no confinement configured). */
+export function getConfiguredWriteRoots(): string[] | null {
+  const raw = process.env[WRITE_ROOTS_ENV_VAR];
+  if (raw === cachedRootsEnv) return cachedRoots;
+  cachedRootsEnv = raw;
+  if (!raw || !raw.trim()) {
+    cachedRoots = null;
+    return null;
+  }
+  const roots = raw
+    .split(nodePath.delimiter)
+    .map((entry) => resolveRootForCompare(entry))
+    .filter((entry): entry is string => entry !== null);
+  cachedRoots = roots.length > 0 ? roots : null;
+  return cachedRoots;
+}
+
+function isInsideRoot(candidate: string, root: string): boolean {
+  if (candidate === root) return true;
+  return candidate.startsWith(root.endsWith(nodePath.sep) ? root : `${root}${nodePath.sep}`);
+}
+
+/**
+ * Resolves a (possibly not-yet-existing) write target to its real path: the
+ * realpath of the deepest existing ancestor, joined with the remaining
+ * not-yet-created segments. This mirrors `findSymlinkedSegment`'s walk but
+ * also returns the resolved path for the write-roots comparison, so a symlink
+ * cannot be used to redirect a write outside the existing ancestor's real
+ * location.
+ */
+export function resolveWriteTarget(targetPath: string): string {
+  if (!nodePath.isAbsolute(targetPath)) throw new WriteRootViolationError(targetPath, getConfiguredWriteRoots() ?? []);
+  let current = nodePath.resolve(targetPath);
+  const remainder: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return remainder.length > 0 ? nodePath.join(real, ...remainder) : real;
+    } catch {
+      const parent = nodePath.dirname(current);
+      if (parent === current) return remainder.length > 0 ? nodePath.join(current, ...remainder) : current;
+      remainder.unshift(nodePath.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Central write-confinement check: every tool that writes, overwrites, or
+ * deletes a file on disk (directly via Node `fs`, or indirectly by embedding
+ * the path into ExtendScript the CEP panel executes) must call this before
+ * doing so. Returns the resolved absolute path to use for the write. When
+ * `PREMIERE_MCP_WRITE_ROOTS` is unset this only normalizes/resolves the path
+ * and never throws for containment (backward compatible); when set, it also
+ * refuses any target outside the configured roots.
+ */
+export function assertWritePathAllowed(targetPath: string, label = "output_path"): string {
+  if (typeof targetPath !== "string" || !targetPath.trim()) {
+    throw new WriteRootViolationError(String(targetPath), getConfiguredWriteRoots() ?? []);
+  }
+  if (!nodePath.isAbsolute(targetPath)) {
+    throw new Error(`${label} must be an absolute path`);
+  }
+  const resolved = resolveWriteTarget(targetPath);
+  const roots = getConfiguredWriteRoots();
+  if (!roots) return resolved;
+  const compare = normalizeForCompare(resolved);
+  if (!roots.some((root) => isInsideRoot(compare, root))) {
+    throw new WriteRootViolationError(targetPath, roots);
+  }
+  return resolved;
+}
+
+/** Test-only: forces re-reading `PREMIERE_MCP_WRITE_ROOTS` on the next call. */
+export function resetWriteRootsCacheForTests(): void {
+  cachedRootsEnv = undefined;
+  cachedRoots = null;
+}
+
+const URL_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:[\\/]/;
+
+/** True when `value` looks like a URL or ffmpeg protocol prefix (http:, concat:, pipe:, subfile:, data:, file:, ...) rather than a plain local path. A Windows drive path like `C:\foo` is not a scheme. */
+export function hasUrlOrProtocolScheme(value: string): boolean {
+  if (WINDOWS_DRIVE_PATTERN.test(value)) return false;
+  return URL_SCHEME_PATTERN.test(value);
+}
+
+export class MediaPathError extends Error {
+  readonly code = "MEDIA_PATH_REFUSED";
+  constructor(message: string) {
+    super(message);
+    this.name = "MediaPathError";
+  }
+}
+
+/**
+ * Confines an ffmpeg/ffprobe input argument to an existing local regular
+ * file. Rejects URL/protocol-prefixed values (http:, concat:, subfile:,
+ * pipe:, data:, file:, ...) that could make ffmpeg fetch a remote resource or
+ * read an unintended local file through a non-`file` protocol (SSRF / path
+ * confusion) and rejects NUL bytes. Symlinked media folders are allowed:
+ * reads are not confined, so refusing them would add no protection. This
+ * does not apply `PREMIERE_MCP_WRITE_ROOTS`: that allowlist
+ * confines where this server writes, not every file it may read for analysis.
+ */
+export function assertLocalMediaPath(mediaPath: unknown, label = "media_path"): string {
+  if (typeof mediaPath !== "string" || !mediaPath.trim()) {
+    throw new MediaPathError(`${label} must be a non-empty local file path`);
+  }
+  if (mediaPath.includes("\0")) throw new MediaPathError(`${label} is not a valid path`);
+  if (hasUrlOrProtocolScheme(mediaPath)) {
+    throw new MediaPathError(`${label} must be a local file path, not a URL or protocol-prefixed value: ${mediaPath}`);
+  }
+  const resolved = nodePath.resolve(mediaPath);
+  let stats;
+  try {
+    stats = statSync(resolved);
+  } catch {
+    throw new MediaPathError(`${label} not found on disk: ${resolved}`);
+  }
+  if (!stats.isFile()) throw new MediaPathError(`${label} must be an existing regular file: ${resolved}`);
+  return resolved;
+}
+
+/** ffmpeg/ffprobe CLI args that restrict input demuxing to plain local files. Insert once per `-i`/probe target. */
+export const FFMPEG_PROTOCOL_WHITELIST_ARGS: readonly string[] = ["-protocol_whitelist", "file"];
