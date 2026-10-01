@@ -94,6 +94,22 @@
     return "'" + String(value).replace(/'/g, "''") + "'";
   }
 
+  // Strict `x.y.z` only: no ranges, dist-tags, pre-release/build metadata, or shell metacharacters.
+  // Every install this module schedules must use the exact version the user was shown, not whatever
+  // "latest" resolves to by the time the scheduled script actually runs.
+  var STRICT_SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
+
+  function isStrictSemver(value) {
+    return typeof value === "string" && STRICT_SEMVER_PATTERN.test(value);
+  }
+
+  function assertPinnedVersion(version) {
+    if (!isStrictSemver(version)) {
+      throw new Error("The update version must be an exact x.y.z release, not a range or tag.");
+    }
+    return version;
+  }
+
   function randomSuffix(runtime) {
     if (runtime.crypto && typeof runtime.crypto.randomBytes === "function") {
       return runtime.crypto.randomBytes(12).toString("hex");
@@ -107,12 +123,15 @@
    * already-installed per-user npm command. It does not receive project data,
    * MCP configuration, or credentials, and it never force-quits Premiere.
    */
-  function buildWindowsGlobalUpdateScript(cliPath, statusPath, scriptPath) {
+  function buildWindowsGlobalUpdateScript(cliPath, statusPath, scriptPath, version) {
+    assertPinnedVersion(version);
+    var packageSpec = powerShellLiteral(PACKAGE_NAME + "@" + version);
     return [
       "$ErrorActionPreference = 'Stop'",
       "$cliPath = " + powerShellLiteral(cliPath),
       "$statusPath = " + powerShellLiteral(statusPath),
       "$scriptPath = " + powerShellLiteral(scriptPath),
+      "$packageSpec = " + packageSpec,
       "function Write-UpdateStatus([string]$state) {",
       "  $payload = @{ schemaVersion = 'premiere-pro-mcp.desktop-update.v1'; state = $state; updatedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress",
       "  [System.IO.File]::WriteAllText($statusPath, $payload, [System.Text.UTF8Encoding]::new($false))",
@@ -123,8 +142,8 @@
       "  while (Get-Process -Name $premiereProcesses -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }",
       "  Write-UpdateStatus 'updating'",
       "  $npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source",
-      "  & $npmCommand install --global 'premiere-pro-mcp@latest'",
-      "  if ($LASTEXITCODE -ne 0) { throw 'npm could not install the latest Premiere MCP package.' }",
+      "  & $npmCommand install --global $packageSpec",
+      "  if ($LASTEXITCODE -ne 0) { throw 'npm could not install the pinned Premiere MCP package.' }",
       "  & $cliPath --install-cep",
       "  if ($LASTEXITCODE -ne 0) { throw 'The refreshed Premiere MCP package could not install its connector.' }",
       "  Write-UpdateStatus 'complete'",
@@ -153,6 +172,7 @@
     if (!cliPath || typeof path.isAbsolute !== "function" || !path.isAbsolute(cliPath)) {
       throw new Error("The per-user Premiere MCP command could not be resolved.");
     }
+    var version = assertPinnedVersion(options.version);
     if (typeof fs.existsSync === "function" && !fs.existsSync(cliPath)) {
       throw new Error("The per-user Premiere MCP command is not installed.");
     }
@@ -166,7 +186,7 @@
     var suffix = randomSuffix(runtime);
     var statusPath = path.join(updateDirectory, "premiere-pro-mcp-update-" + suffix + ".json");
     var scriptPath = path.join(updateDirectory, "premiere-pro-mcp-update-" + suffix + ".ps1");
-    var script = buildWindowsGlobalUpdateScript(cliPath, statusPath, scriptPath);
+    var script = buildWindowsGlobalUpdateScript(cliPath, statusPath, scriptPath, version);
     fs.writeFileSync(scriptPath, script, { encoding: "utf8", mode: 0o600, flag: "wx" });
 
     try {
@@ -198,6 +218,7 @@
     updateStateFromPackageRecord: updateStateFromPackageRecord,
     chooseDownloadUrl: chooseDownloadUrl,
     isTrustedDownloadUrl: isTrustedDownloadUrl,
+    isStrictSemver: isStrictSemver,
     buildWindowsGlobalUpdateScript: buildWindowsGlobalUpdateScript,
     scheduleWindowsGlobalUpdate: scheduleWindowsGlobalUpdate,
   };

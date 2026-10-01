@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  buildPinnedGlobalInstallArgs,
   compareVersions,
+  isAutomaticUpdateCheckDisabled,
+  isStrictSemver,
   latestVersionFromRegistry,
   normalizeVersion,
 } from "../src/update.js";
@@ -38,11 +41,42 @@ describe("user update paths", () => {
     expect(packageJson.scripts["check-update:source"]).toBe("node scripts/update-source.mjs --check");
     expect(cli).toContain("--check-update");
     expect(cli).toContain("--update");
-    expect(cli).toContain('"install", "--global", "premiere-pro-mcp@latest"');
+    expect(cli).toContain("buildPinnedGlobalInstallArgs(\"premiere-pro-mcp\", update.latestVersion)");
+    expect(cli).not.toContain('"premiere-pro-mcp@latest"');
     expect(cli).toContain("--install-cep");
     expect(sourceUpdater).toContain('const workingTreeDirty = Boolean(run("git", ["status", "--porcelain"]))');
     expect(sourceUpdater).toContain('runInherited("git", ["merge", "--ff-only", "@{upstream}"])');
+    expect(sourceUpdater).toContain('run("git", ["log", "--oneline", "HEAD..@{upstream}"])');
+    expect(sourceUpdater).toContain("--verify-tag");
     expect(sourceUpdater).toContain("runNpm([\"ci\"])");
     expect(sourceUpdater).toContain('["dist/index.js", "--install-cep"]');
+  });
+
+  it("validates exact x.y.z versions before they can be interpolated into an install command", () => {
+    expect(isStrictSemver("1.14.8")).toBe(true);
+    expect(isStrictSemver("1.14")).toBe(false);
+    expect(isStrictSemver("1.14.8-beta.1")).toBe(false);
+    expect(isStrictSemver("latest")).toBe(false);
+    expect(isStrictSemver("^1.14.8")).toBe(false);
+    expect(isStrictSemver("1.14.8; rm -rf /")).toBe(false);
+    expect(isStrictSemver(undefined)).toBe(false);
+  });
+
+  it("builds a pinned global install argument array and rejects anything unpinned", () => {
+    expect(buildPinnedGlobalInstallArgs("premiere-pro-mcp", "1.14.8")).toEqual([
+      "install",
+      "--global",
+      "premiere-pro-mcp@1.14.8",
+    ]);
+    expect(() => buildPinnedGlobalInstallArgs("premiere-pro-mcp", "latest")).toThrow("exact x.y.z release");
+    expect(() => buildPinnedGlobalInstallArgs("premiere-pro-mcp", "^1.14.8")).toThrow("exact x.y.z release");
+    expect(() => buildPinnedGlobalInstallArgs("premiere-pro-mcp; rm -rf /", "1.14.8")).toThrow("invalid");
+  });
+
+  it("honors PREMIERE_MCP_NO_UPDATE_CHECK for the server-side update check", () => {
+    expect(isAutomaticUpdateCheckDisabled({ PREMIERE_MCP_NO_UPDATE_CHECK: "1" })).toBe(true);
+    expect(isAutomaticUpdateCheckDisabled({ PREMIERE_MCP_NO_UPDATE_CHECK: "true" })).toBe(true);
+    expect(isAutomaticUpdateCheckDisabled({ PREMIERE_MCP_NO_UPDATE_CHECK: "0" })).toBe(false);
+    expect(isAutomaticUpdateCheckDisabled({})).toBe(false);
   });
 });

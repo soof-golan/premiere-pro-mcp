@@ -106,10 +106,14 @@ vi.mock("../src/bridge/uxp-websocket-bridge.js", () => ({
     address() { return { host: "127.0.0.1", port: 7788, path: "/premiere-uxp" }; }
   },
 }));
-vi.mock("../src/update.js", () => ({
-  compareVersions: (left: string, right: string) => left.localeCompare(right),
-  fetchLatestNpmVersion: mocks.fetchLatestNpmVersion,
-}));
+vi.mock("../src/update.js", async (original) => {
+  const actual = await original<typeof import("../src/update.js")>();
+  return {
+    ...actual,
+    compareVersions: (left: string, right: string) => left.localeCompare(right),
+    fetchLatestNpmVersion: mocks.fetchLatestNpmVersion,
+  };
+});
 vi.mock("node:child_process", () => ({ execFileSync: mocks.execFileSync, spawnSync: mocks.spawnSync }));
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -251,13 +255,37 @@ describe("stdio CLI entry point", () => {
     await expect(loaded.promise).rejects.toThrow("EXIT:0");
     expect(mocks.execFileSync).toHaveBeenCalledWith(
       expect.any(String),
-      expect.arrayContaining(["install", "--global", "premiere-pro-mcp@latest"]),
+      expect.arrayContaining(["install", "--global", `premiere-pro-mcp@${nextVersion}`]),
       expect.objectContaining({ stdio: "inherit" }),
     );
     expect(mocks.execFileSync).toHaveBeenCalledWith(
       process.execPath,
       expect.arrayContaining(["--install-cep"]),
       expect.objectContaining({ cwd: process.cwd() }),
+    );
+  });
+
+  it("skips the --check-update network call when PREMIERE_MCP_NO_UPDATE_CHECK is set, but still allows an explicit --update", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    process.env.PREMIERE_MCP_NO_UPDATE_CHECK = "1";
+    let loaded = await importCli(["--check-update"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("PREMIERE_MCP_NO_UPDATE_CHECK"));
+    expect(mocks.fetchLatestNpmVersion).not.toHaveBeenCalled();
+
+    vi.resetModules();
+    vi.clearAllMocks();
+    log.mockClear();
+    process.env.PREMIERE_MCP_NO_UPDATE_CHECK = "1";
+    mocks.fetchLatestNpmVersion.mockResolvedValueOnce(nextVersion);
+    mocks.spawnSync.mockReturnValue({ status: 0, stdout: `${dirname(process.cwd())}\n` });
+    loaded = await importCli(["--update"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(mocks.fetchLatestNpmVersion).toHaveBeenCalledOnce();
+    expect(mocks.execFileSync).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(["install", "--global", `premiere-pro-mcp@${nextVersion}`]),
+      expect.objectContaining({ stdio: "inherit" }),
     );
   });
 
