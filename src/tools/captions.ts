@@ -182,7 +182,7 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
           op47: "Sequence.CAPTION_FORMAT_OP47",
         };
         const captionFormatKey = args.caption_format ?? "subtitle";
-        const format = formatMap[captionFormatKey];
+        const format = Object.hasOwn(formatMap, captionFormatKey) ? formatMap[captionFormatKey] : undefined;
         if (!format) {
           return {
             success: false,

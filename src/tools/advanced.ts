@@ -1312,7 +1312,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           all: '"FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"',
         };
         const mediaTypeKey = args.media_type ?? "all";
-        const mediaType = typeMap[mediaTypeKey];
+        const mediaType = Object.hasOwn(typeMap, mediaTypeKey) ? typeMap[mediaTypeKey] : undefined;
         if (!mediaType) {
           return {
             success: false,
