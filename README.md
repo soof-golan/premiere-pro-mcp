@@ -1375,6 +1375,7 @@ user/device authorization are implemented.
 | `MCP_MAX_CONCURRENT_REQUESTS` | In-flight authenticated MCP request ceiling | `8` |
 | `MCP_MAX_CONCURRENT_STREAMS` | Open authenticated SSE stream ceiling; isolated from operation capacity | `32` |
 | `PREMIERE_MCP_PROJECT_BACKUP_MAX_BYTES` | Positive integer byte budget for one project backup | `2147483648` (2 GiB) |
+| `PREMIERE_MCP_WRITE_ROOTS` | `path.delimiter`-separated allowlist of directories this server may write, overwrite, or delete files inside (export, project save-as/create, caption/EDL output, proxy/backup/consolidate destinations, and FFmpeg-derived output files). Unset preserves prior behavior exactly; set, every disk write is confined to these roots and a model-supplied argument such as `approved_workspace_path` is refused unless it also resolves inside them, since that argument is not a security boundary by itself | unset (no confinement) |
 | `MCP_RATE_LIMIT_PER_MINUTE` | Per-credential token-bucket refill rate | `120` |
 | `MCP_RATE_LIMIT_BURST` | Per-credential short burst allowance | `30` |
 | `MCP_MAX_RATE_LIMIT_KEYS` | In-memory rate-limit identity ceiling | `2048` |

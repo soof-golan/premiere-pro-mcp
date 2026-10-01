@@ -1,10 +1,11 @@
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   buildToolScript,
   escapeForExtendScript,
 } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { applyScratchDisks } from "./scratch-disks.js";
+import { assertWritePathAllowed } from "../security/path-guard.js";
 
 const PROJECT_PANEL_METADATA_MIN_CHARS = 256;
 const PROJECT_PANEL_METADATA_MAX_CHARS = 200000;
@@ -44,7 +45,13 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
         if (typeof args.path !== "string" || !/\.prproj$/i.test(args.path.trim())) {
           return { success: false, error: "path must be a .prproj file path" };
         }
-        const target = escapeForExtendScript(args.path.trim());
+        let guardedPath: string;
+        try {
+          guardedPath = assertWritePathAllowed(resolve(args.path.trim()), "path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+        const target = escapeForExtendScript(guardedPath);
         const script = buildToolScript(`
           var project = app.project;
           if (!project) return __error("No project is open");
@@ -288,13 +295,19 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
       required: ["path"],
       },
       handler: async (args: { path: string }) => {
-        const requestedPath = args.path.trim();
-        if (!/\.prproj$/i.test(requestedPath)) {
+        const requestedPathRaw = args.path.trim();
+        if (!/\.prproj$/i.test(requestedPathRaw)) {
           return {
             success: false,
             error:
               "create_project path must be a full .prproj file path; Premiere cannot create a project from a directory path.",
           };
+        }
+        let requestedPath: string;
+        try {
+          requestedPath = assertWritePathAllowed(resolve(requestedPathRaw), "path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
         const script = buildToolScript(`
           var requestedPath = "${escapeForExtendScript(requestedPath)}";
@@ -867,9 +880,15 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
               "project_path must be a non-empty destination .prproj path. app.openFCPXML(path, projPath) needs both arguments; passing only path fails with \"Not Enough Parameters\".",
           };
         }
+        let guardedProjectPath: string;
+        try {
+          guardedProjectPath = assertWritePathAllowed(resolve(args.project_path), "project_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
         const xmlPath = escapeForExtendScript(args.path);
-        const projectPath = escapeForExtendScript(args.project_path);
-        const projectFolder = escapeForExtendScript(dirname(args.project_path));
+        const projectPath = escapeForExtendScript(guardedProjectPath);
+        const projectFolder = escapeForExtendScript(dirname(guardedProjectPath));
         const script = buildToolScript(`
           var xmlFile = new File("${xmlPath}");
           if (!xmlFile.exists) return __error("FCP XML file not found on disk: ${xmlPath}");

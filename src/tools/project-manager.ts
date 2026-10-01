@@ -1,5 +1,7 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
+import { resolve } from "node:path";
+import { assertWritePathAllowed } from "../security/path-guard.js";
 
 export function getProjectManagerTools(bridgeOptions: BridgeOptions) {
   return {
@@ -71,7 +73,13 @@ export function getProjectManagerTools(bridgeOptions: BridgeOptions) {
         if (args.copy_to_new_location === false) {
           return { success: false, error: "copy_to_new_location false is not supported: Premiere's scripted Project Manager always collects media into destination_path." };
         }
-        const destination = escapeForExtendScript(destinationPath.replace(/\/+$/, ""));
+        let guardedDestination: string;
+        try {
+          guardedDestination = assertWritePathAllowed(resolve(destinationPath.replace(/\/+$/, "")), "destination_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+        const destination = escapeForExtendScript(guardedDestination);
         // Live 25.2: the settings live on projectManager.options (setting them on
         // projectManager itself is ignored), the destination must already exist,
         // process() returns 0 on success, and the copy lands in Copied_<project>.

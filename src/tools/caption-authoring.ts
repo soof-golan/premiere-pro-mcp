@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { assertWritePathAllowed } from "../security/path-guard.js";
 import {
   buildCaptionArtifact,
   CAPTION_AUTHORING_ROUTES,
@@ -32,6 +33,12 @@ function absolutePath(value: unknown, label: string): string {
  * Resolves `output_path` to a writable location contained inside the approved
  * workspace. Containment is checked on the realpath of the parent directory so
  * symlinks cannot escape the workspace; the file itself must not exist yet.
+ *
+ * `approved_workspace_path` is supplied by the model, so it is not a security
+ * boundary by itself -- a prompt-injected model can set it to anything. When
+ * the operator has configured `PREMIERE_MCP_WRITE_ROOTS`, both the workspace
+ * and the resolved output path must also fall inside those roots; see
+ * `src/security/path-guard.ts`.
  */
 export function resolveContainedOutputPath(workspace: unknown, output: unknown): string {
   const workspacePath = absolutePath(workspace, "approved_workspace_path");
@@ -56,6 +63,10 @@ export function resolveContainedOutputPath(workspace: unknown, output: unknown):
   if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("output_path must be contained within approved_workspace_path");
   const resolved = path.join(parent, base);
   if (existsSync(resolved)) throw new Error(`output_path already exists and will not be overwritten: ${resolved}`);
+  // approved_workspace_path is model-supplied, not a security boundary; also
+  // require both it and the resolved target inside the operator allowlist.
+  assertWritePathAllowed(root, "approved_workspace_path");
+  assertWritePathAllowed(resolved, "output_path");
   return resolved;
 }
 
@@ -83,7 +94,7 @@ export function getCaptionAuthoringTools() {
           uppercase: { type: "boolean", description: "Render caption text in upper case." },
           style_preset: { type: "string", enum: [...CAPTION_STYLE_PRESETS], description: "Style descriptor to return with the artifact (default clean). Documentation only; not encoded in SRT/VTT." },
           output_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Optional absolute file path to write the artifact to. Requires approved_workspace_path; the file must not already exist. When omitted the artifact text is returned inline (up to 512 KiB)." },
-          approved_workspace_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Absolute existing directory that must contain output_path (checked via realpath of the parent directory). Required with output_path." },
+          approved_workspace_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Absolute existing directory that must contain output_path (checked via realpath of the parent directory). Required with output_path. This argument is caller-supplied and is not a security boundary by itself; when the operator has set PREMIERE_MCP_WRITE_ROOTS, both this directory and output_path must also resolve inside it." },
         },
         required: ["word_timeline", "format"],
       },

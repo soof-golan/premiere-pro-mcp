@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { basename, dirname, extname, resolve } from "node:path";
 import { promisify } from "node:util";
+import { assertLocalMediaPath, assertWritePathAllowed, FFMPEG_PROTOCOL_WHITELIST_ARGS } from "../security/path-guard.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -164,7 +165,7 @@ export function parseLoudnormJson(stderr: string): LoudnormStats {
 
 async function probeAudioStream(path: string): Promise<{ sampleRate: number | null; bitRate: number | null } | null> {
   try {
-    const { stdout } = await execFileAsync("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,bit_rate", "-of", "json", path], { timeout: 15000 });
+    const { stdout } = await execFileAsync("ffprobe", ["-v", "error", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-select_streams", "a:0", "-show_entries", "stream=sample_rate,bit_rate", "-of", "json", path], { timeout: 15000 });
     const stream = JSON.parse(stdout).streams?.[0];
     if (!stream) return null;
     const rate = Number(stream.sample_rate);
@@ -326,8 +327,10 @@ export async function analyzeSilenceFile(
   noiseDb: number,
   minDuration: number,
 ): Promise<{ success: true; data: SilenceAnalysis } | { success: false; error: string }> {
-  if (!existsSync(mediaPath)) {
-    return { success: false, error: `Media file not found on disk: ${mediaPath}` };
+  try {
+    mediaPath = assertLocalMediaPath(mediaPath);
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 
   try {
@@ -343,6 +346,7 @@ export async function analyzeSilenceFile(
   const ffmpegArgs = [
     "-nostdin",
     "-hide_banner",
+    ...FFMPEG_PROTOCOL_WHITELIST_ARGS,
     "-i",
     mediaPath,
     "-af",
@@ -815,14 +819,16 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         if (!Number.isInteger(maxBeats) || maxBeats < 1 || maxBeats > 2000) {
           return { success: false, error: "max_beats must be an integer from 1 through 2000." };
         }
-        const mediaPath = resolve(args.media_path);
-        if (!existsSync(mediaPath) || !statSync(mediaPath).isFile()) {
-          return { success: false, error: `Media file not found on disk: ${mediaPath}` };
+        let mediaPath: string;
+        try {
+          mediaPath = assertLocalMediaPath(args.media_path);
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
         let bytes: Buffer;
         try {
           const result = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-loglevel", "error", "-i", mediaPath,
+            "-nostdin", "-hide_banner", "-loglevel", "error", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", mediaPath,
             "-t", "1800", "-vn", "-sn", "-dn", "-ac", "1", "-ar", "200", "-f", "s16le", "pipe:1",
           ], { encoding: "buffer", timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 128 * 1024 * 1024 }) as unknown as { stdout: Buffer };
           bytes = result.stdout;
@@ -930,8 +936,10 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
           mediaPath = data.mediaPath;
           itemName = data.name;
         }
-        if (!existsSync(mediaPath)) {
-          return { success: false, error: `Media file not found on disk: ${mediaPath}` };
+        try {
+          mediaPath = assertLocalMediaPath(mediaPath, "Media file");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
 
         try {
@@ -946,7 +954,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         let stderr: string;
         try {
           const result = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-i", mediaPath,
+            "-nostdin", "-hide_banner", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", mediaPath,
             "-vn", "-sn", "-dn", "-af", "ebur128=peak=true", "-f", "null", "-",
           ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
           stderr = result.stderr;
@@ -1010,18 +1018,29 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         required: ["input_path", "output_path"],
       },
       handler: async (args: { input_path: string; output_path: string; target_lufs?: number; max_true_peak_dbfs?: number; tolerance_lu?: number }) => {
-        const inputPath = resolve(args.input_path);
-        const outputPath = resolve(args.output_path);
         const target = args.target_lufs ?? -16;
         const truePeak = args.max_true_peak_dbfs ?? -1.5;
         const tolerance = args.tolerance_lu ?? 1;
         if (!Number.isFinite(target) || target < -70 || target > -5) return { success: false, error: "target_lufs must be from -70 through -5" };
         if (!Number.isFinite(truePeak) || truePeak < -9 || truePeak > 0) return { success: false, error: "max_true_peak_dbfs must be from -9 through 0" };
         if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 5) return { success: false, error: "tolerance_lu must be from 0 through 5" };
-        if (inputPath === outputPath) return { success: false, error: "output_path must differ from input_path" };
-        if (!existsSync(inputPath) || !statSync(inputPath).isFile()) return { success: false, error: `Input file not found: ${inputPath}` };
-        if (existsSync(outputPath)) return { success: false, error: `Output already exists and will not be overwritten: ${outputPath}` };
-        if (!existsSync(dirname(outputPath)) || !statSync(dirname(outputPath)).isDirectory()) return { success: false, error: `Output directory does not exist: ${dirname(outputPath)}` };
+        const inputPathRaw = resolve(args.input_path);
+        const outputPathRaw = resolve(args.output_path);
+        if (inputPathRaw === outputPathRaw) return { success: false, error: "output_path must differ from input_path" };
+        let inputPath: string;
+        try {
+          inputPath = assertLocalMediaPath(inputPathRaw, "input_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+        if (existsSync(outputPathRaw)) return { success: false, error: `Output already exists and will not be overwritten: ${outputPathRaw}` };
+        if (!existsSync(dirname(outputPathRaw)) || !statSync(dirname(outputPathRaw)).isDirectory()) return { success: false, error: `Output directory does not exist: ${dirname(outputPathRaw)}` };
+        let outputPath: string;
+        try {
+          outputPath = assertWritePathAllowed(outputPathRaw, "output_path");
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
 
         // Two-pass loudnorm: measure, then apply linearly with the measured values.
         // Single-pass (dynamic) loudnorm undershot a dense, clipped music-video mix by
@@ -1037,7 +1056,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         let firstPass: LoudnormStats;
         try {
           const measured = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-i", inputPath, "-vn", "-sn", "-dn",
+            "-nostdin", "-hide_banner", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", inputPath, "-vn", "-sn", "-dn",
             "-af", `loudnorm=I=${target}:TP=${truePeak}:LRA=11:print_format=json`, "-f", "null", "-",
           ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
           firstPass = parseLoudnormJson(measured.stderr);
@@ -1060,7 +1079,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         let secondPass: LoudnormStats;
         try {
           const applied = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-n", "-i", inputPath,
+            "-nostdin", "-hide_banner", "-n", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", inputPath,
             "-af", filter, "-ar", String(source.sampleRate ?? 48000), ...audioCodecArgs,
             "-c:v", "copy", outputPath,
           ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
@@ -1075,7 +1094,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         let measurement: LoudnessMeasurement;
         try {
           const measured = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-i", outputPath,
+            "-nostdin", "-hide_banner", ...FFMPEG_PROTOCOL_WHITELIST_ARGS, "-i", outputPath,
             "-vn", "-sn", "-dn", "-af", "ebur128=peak=true", "-f", "null", "-",
           ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
           measurement = parseEbur128Summary(measured.stderr);
