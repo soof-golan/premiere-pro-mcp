@@ -366,7 +366,7 @@ Fully quit Premiere, then remove only this connector:
 premiere-pro-mcp --uninstall-cep
 ```
 
-The uninstaller intentionally leaves Adobe's shared `PlayerDebugMode` setting in place so it does not disrupt other CEP extensions. Remove the MCP server from your AI client's configuration and uninstall the npm package separately if you no longer use it. On macOS, `--uninstall-cep` removes the per-user npm/source install; the signed system-wide `.pkg` route has a separate privileged removal command in [distribution readiness](docs/distribution-readiness.md#connector-removal).
+Installing the unsigned, folder-based connector enables Adobe's shared `PlayerDebugMode` setting, which disables CEP extension signature verification for **all** CEP extensions for the current user, not just this one; the installer records the prior value for each CSXS version first and only changes what is not already set. The uninstaller restores those recorded values (and removes nothing if another MCP CEP connector is still installed at that scope), then deletes its state file. If no baseline was recorded (for example, after an older version of this installer), it leaves `PlayerDebugMode` alone and prints manual reset instructions instead of changing it silently. Remove the MCP server from your AI client's configuration and uninstall the npm package separately if you no longer use it. On macOS, `--uninstall-cep` removes the per-user npm/source install; the signed system-wide `.pkg` route has a separate privileged removal command in [distribution readiness](docs/distribution-readiness.md#connector-removal).
 
 </details>
 
@@ -406,7 +406,10 @@ NPM_TOKEN=npm_xxx npm run publish:npm
 mkdir -p ~/Library/Application\ Support/Adobe/CEP/extensions
 ln -s "$(pwd)/cep-plugin" ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP
 
-# Enable unsigned extensions (CSXS 9–14)
+# Enable unsigned extensions (CSXS 9–14). WARNING: this disables CEP
+# extension signature verification for ALL CEP extensions for this user,
+# not just this one. Prefer `premiere-pro-mcp --install-cep`, which records
+# the prior values first so `--uninstall-cep` can restore them.
 for v in 9 10 11 12 13 14; do
   defaults write com.adobe.CSXS.$v PlayerDebugMode 1
 done
@@ -418,7 +421,10 @@ done
 <summary>Manual installation (Windows)</summary>
 
 1. Copy the `cep-plugin` folder to `%APPDATA%\Adobe\CEP\extensions\MCPBridgeCEP`
-2. Open Registry Editor and set these **String (`REG_SZ`)** values to `1` (not DWORD):
+2. Open Registry Editor and set these **String (`REG_SZ`)** values to `1` (not DWORD). WARNING: this
+   disables CEP extension signature verification for ALL CEP extensions for the current Windows
+   user, not just this one. Prefer `premiere-pro-mcp --install-cep`, which records the prior values
+   first so `--uninstall-cep` can restore them:
    - `HKEY_CURRENT_USER\Software\Adobe\CSXS.12\PlayerDebugMode`
    - (repeat for CSXS.9 through CSXS.14)
 

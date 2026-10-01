@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.Win32;
 
 namespace PremiereConnectorInstaller;
@@ -44,9 +45,11 @@ internal static class Program
                     return 3;
                 }
                 RemoveConnector();
+                string debugModeMessage = RestorePlayerDebugMode();
                 Show(
                     quiet,
-                    "Premiere Connector was removed. Adobe's shared debug setting was left unchanged for other CEP extensions. Remove the MCP server from your AI client separately if needed.",
+                    "Premiere Connector was removed. " + debugModeMessage +
+                    " Remove the MCP server from your AI client separately if needed.",
                     MessageBoxIcon.Information);
                 return 0;
             }
@@ -89,6 +92,23 @@ internal static class Program
 
     private static string Destination => Path.GetFullPath(Path.Combine(CepRoot, ExtensionId));
 
+    // Shared with scripts/install-cep.ps1 and scripts/uninstall-cep.ps1: both
+    // write into the same CEP extensions directory, so they use the same
+    // PlayerDebugMode baseline file and JSON schema.
+    private static string PlayerDebugModeStateFile => Path.Combine(CepRoot, ".premiere-pro-mcp-player-debug-mode.state.json");
+
+    private sealed class PlayerDebugModeEntry
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("existed")]
+        public bool Existed { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("value")]
+        public string? Value { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        public string? Kind { get; set; }
+    }
+
     private static void InstallConnector()
     {
         EnsureInsideCepRoot(Destination);
@@ -108,11 +128,12 @@ internal static class Program
             Directory.Move(staging, Destination);
             if (Directory.Exists(backup)) Directory.Delete(backup, true);
 
-            for (int version = 9; version <= 14; version++)
-            {
-                using RegistryKey key = Registry.CurrentUser.CreateSubKey($@"SOFTWARE\Adobe\CSXS.{version}", true);
-                key.SetValue("PlayerDebugMode", "1", RegistryValueKind.String);
-            }
+            // This installer always embeds a verified, signed MCPBridgeCEP.zxp
+            // (enforced by RequireConnectorPackage / VerifyEmbeddedPackage), so
+            // unlike the unsigned development bundle copied by install-cep.ps1,
+            // it does not need Adobe's PlayerDebugMode to load. PlayerDebugMode
+            // disables CEP signature verification for ALL CEP extensions for
+            // this Windows user, so it is intentionally left untouched here.
         }
         catch
         {
@@ -186,6 +207,67 @@ internal static class Program
     {
         EnsureInsideCepRoot(Destination);
         if (Directory.Exists(Destination)) Directory.Delete(Destination, true);
+    }
+
+    // Restores PlayerDebugMode values recorded by an older build of this
+    // installer or by scripts/install-cep.ps1 (they share the same CEP
+    // extensions directory and state-file schema). This installer's own
+    // current InstallConnector() no longer sets PlayerDebugMode, but a
+    // machine that was set up before this fix may still have it enabled with
+    // no baseline recorded.
+    private static string RestorePlayerDebugMode()
+    {
+        string stateFile = PlayerDebugModeStateFile;
+        string afterEffectsSibling = Path.Combine(CepRoot, "MCPAfterEffectsBridgeCEP");
+
+        if (Directory.Exists(afterEffectsSibling))
+        {
+            return "Another MCP CEP connector is still installed for this Windows user, so Adobe's PlayerDebugMode setting was left unchanged.";
+        }
+
+        if (!File.Exists(stateFile))
+        {
+            return "Adobe's shared PlayerDebugMode setting was left unchanged (no baseline was recorded, so it may have been enabled by an older installer). " +
+                "To turn it off manually for CSXS 9-14, only if no other unsigned CEP extension needs it, remove the PlayerDebugMode value under " +
+                @"HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.9 through CSXS.14.";
+        }
+
+        try
+        {
+            string json = File.ReadAllText(stateFile);
+            Dictionary<string, PlayerDebugModeEntry>? priorState =
+                JsonSerializer.Deserialize<Dictionary<string, PlayerDebugModeEntry>>(json);
+
+            if (priorState is not null)
+            {
+                foreach (KeyValuePair<string, PlayerDebugModeEntry> pair in priorState)
+                {
+                    string version = pair.Key.StartsWith("CSXS.", StringComparison.OrdinalIgnoreCase)
+                        ? pair.Key["CSXS.".Length..]
+                        : pair.Key;
+                    using RegistryKey key = Registry.CurrentUser.CreateSubKey($@"SOFTWARE\Adobe\CSXS.{version}", true);
+                    if (pair.Value.Existed)
+                    {
+                        RegistryValueKind kind = Enum.TryParse(pair.Value.Kind, out RegistryValueKind parsedKind)
+                            ? parsedKind
+                            : RegistryValueKind.String;
+                        key.SetValue("PlayerDebugMode", pair.Value.Value ?? "0", kind);
+                    }
+                    else
+                    {
+                        key.DeleteValue("PlayerDebugMode", false);
+                    }
+                }
+            }
+
+            File.Delete(stateFile);
+            return "Adobe's PlayerDebugMode setting was restored to the values recorded before installation.";
+        }
+        catch (Exception error)
+        {
+            return "Adobe's PlayerDebugMode setting could not be restored automatically (" + error.Message + "). " +
+                "Check it manually under HKEY_CURRENT_USER\\SOFTWARE\\Adobe\\CSXS.9 through CSXS.14.";
+        }
     }
 
     private static void EnsureInsideCepRoot(string path)

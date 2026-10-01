@@ -64,6 +64,8 @@ if ($signedPackage -and (Test-Path -LiteralPath $signedPackage)) {
   }
 }
 
+$stateFile = Join-Path $cepRoot ".premiere-pro-mcp-player-debug-mode.state.json"
+
 if (-not $Diagnose) {
   New-Item -ItemType Directory -Force -Path $cepRoot | Out-Null
 
@@ -76,6 +78,7 @@ if (-not $Diagnose) {
       Copy-Item -LiteralPath $signedPackage -Destination $temporaryZip
       Expand-Archive -LiteralPath $temporaryZip -DestinationPath $pluginDestination
       Write-Host "Installed signed CEP package: $signedPackage"
+      Write-Host "Signed package in use; PlayerDebugMode was not changed."
     }
     finally {
       if (Test-Path -LiteralPath $temporaryZip) {
@@ -85,15 +88,48 @@ if (-not $Diagnose) {
   }
   else {
     Copy-Item -LiteralPath $pluginSource -Destination $pluginDestination -Recurse
-    Write-Warning "No signed CEP package is present; installed the development bundle and enabled PlayerDebugMode."
-  }
+    Write-Warning "No signed CEP package is present; installed the unsigned development bundle, which requires PlayerDebugMode."
+    Write-Warning "PlayerDebugMode disables CEP extension signature verification for ALL CEP extensions for this Windows user, not just this one."
 
-  # Adobe requires PlayerDebugMode to be a String value. A DWORD that happens
-  # to contain 1 is ignored by CEP and the unsigned extension is not discovered.
-  foreach ($version in 9..14) {
-    $key = "HKCU:\SOFTWARE\Adobe\CSXS.$version"
-    New-Item -Path $key -Force | Out-Null
-    New-ItemProperty -Path $key -Name "PlayerDebugMode" -PropertyType String -Value "1" -Force | Out-Null
+    # Adobe requires PlayerDebugMode to be a String value. A DWORD that happens
+    # to contain 1 is ignored by CEP and the unsigned extension is not discovered.
+    $priorState = [ordered]@{}
+    if (Test-Path -LiteralPath $stateFile) {
+      Write-Host "Reusing the PlayerDebugMode baseline already recorded at $stateFile"
+    }
+    else {
+      Write-Host "Recording current PlayerDebugMode values before changing anything..."
+      foreach ($version in 9..14) {
+        $key = "HKCU:\SOFTWARE\Adobe\CSXS.$version"
+        $existing = Get-ItemProperty -Path $key -Name "PlayerDebugMode" -ErrorAction SilentlyContinue
+        if ($null -eq $existing) {
+          $priorState["CSXS.$version"] = [ordered]@{ existed = $false; value = $null; kind = $null }
+        }
+        else {
+          $existingKind = (Get-Item -Path $key).GetValueKind("PlayerDebugMode")
+          $priorState["CSXS.$version"] = [ordered]@{ existed = $true; value = [string]$existing.PlayerDebugMode; kind = $existingKind.ToString() }
+        }
+      }
+      ($priorState | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $stateFile -Encoding UTF8
+    }
+
+    $changed = $false
+    foreach ($version in 9..14) {
+      $key = "HKCU:\SOFTWARE\Adobe\CSXS.$version"
+      $current = Get-ItemProperty -Path $key -Name "PlayerDebugMode" -ErrorAction SilentlyContinue
+      if ($null -eq $current -or [string]$current.PlayerDebugMode -ne "1") {
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -Path $key -Name "PlayerDebugMode" -PropertyType String -Value "1" -Force | Out-Null
+        $changed = $true
+      }
+    }
+    if ($changed) {
+      Write-Host "CEP debug mode enabled for CSXS 9-14 where needed."
+    }
+    else {
+      Write-Host "CEP debug mode was already enabled for CSXS 9-14; nothing changed."
+    }
+    Write-Host "Run uninstall-cep.ps1 to restore the PlayerDebugMode values recorded above."
   }
 }
 
@@ -102,17 +138,19 @@ if (-not (Test-Path -LiteralPath (Join-Path $pluginDestination "CSXS\manifest.xm
   $problems += "Plugin manifest is missing from $pluginDestination"
 }
 
-foreach ($version in 9..14) {
-  $key = "HKCU:\SOFTWARE\Adobe\CSXS.$version"
-  $value = Get-ItemProperty -Path $key -Name "PlayerDebugMode" -ErrorAction SilentlyContinue
-  if ($null -eq $value -or [string]$value.PlayerDebugMode -ne "1") {
-    $problems += "CSXS.$version PlayerDebugMode is missing or not set to 1"
-    continue
-  }
+if (-not $signedPackageMatchesRelease) {
+  foreach ($version in 9..14) {
+    $key = "HKCU:\SOFTWARE\Adobe\CSXS.$version"
+    $value = Get-ItemProperty -Path $key -Name "PlayerDebugMode" -ErrorAction SilentlyContinue
+    if ($null -eq $value -or [string]$value.PlayerDebugMode -ne "1") {
+      $problems += "CSXS.$version PlayerDebugMode is missing or not set to 1"
+      continue
+    }
 
-  $kind = (Get-Item -Path $key).GetValueKind("PlayerDebugMode")
-  if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String) {
-    $problems += "CSXS.$version PlayerDebugMode is $kind; Adobe requires REG_SZ"
+    $kind = (Get-Item -Path $key).GetValueKind("PlayerDebugMode")
+    if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String) {
+      $problems += "CSXS.$version PlayerDebugMode is $kind; Adobe requires REG_SZ"
+    }
   }
 }
 

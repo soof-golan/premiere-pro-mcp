@@ -61,8 +61,10 @@ matching release asset.
 ## Connector removal
 
 Fully quit Premiere before removal. The command-line path removes only this
-connector and deliberately leaves Adobe's shared `PlayerDebugMode` setting
-unchanged, because another CEP extension may rely on it:
+connector and restores Adobe's shared `PlayerDebugMode` setting to the values
+recorded before installation (skipping the restore while a sibling MCP CEP
+connector is still installed at that scope, since it may still need debug
+mode):
 
 ```bash
 premiere-pro-mcp --uninstall-cep
