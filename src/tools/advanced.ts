@@ -1299,6 +1299,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
         properties: {
           media_type: {
             type: "string",
+            enum: ["video", "audio", "all"],
             description:
               "Type of preview files to delete: 'video', 'audio', or 'all' (default: 'all')",
           },
@@ -1310,12 +1311,19 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           audio: '"80B8E3D5-6DCA-4195-AEFB-CB5F407AB009"',
           all: '"FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"',
         };
-        const mediaType = typeMap[args.media_type || "all"] || typeMap.all;
+        const mediaTypeKey = args.media_type ?? "all";
+        const mediaType = Object.hasOwn(typeMap, mediaTypeKey) ? typeMap[mediaTypeKey] : undefined;
+        if (!mediaType) {
+          return {
+            success: false,
+            error: `media_type must be one of: ${Object.keys(typeMap).join(", ")}`,
+          };
+        }
 
         const script = buildToolScript(`
           app.enableQE();
           qe.project.deletePreviewFiles(${mediaType});
-          return __result({ deleted: true, mediaType: "${args.media_type || "all"}" });
+          return __result({ deleted: true, mediaType: "${escapeForExtendScript(mediaTypeKey)}" });
         `);
         return sendCommand(script, bridgeOptions);
       },

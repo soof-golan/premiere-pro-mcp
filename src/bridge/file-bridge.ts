@@ -583,7 +583,7 @@ function validateScript(script: string, allowUnsafe = false): void {
   const dangerousPatterns = [
     /\beval\s*\(/,
     /\bnew\s+Function\s*\(/,
-    /\bSystem\s*\.\s*callSystem\s*\(/,
+    /\bSystem\s*\.\s*callSystem\s*\(/i,
   ];
 
   for (const pattern of dangerousPatterns) {

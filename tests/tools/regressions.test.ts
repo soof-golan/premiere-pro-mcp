@@ -1376,3 +1376,38 @@ describe("sequence settings setters verify their readback", () => {
     expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });
+
+describe("delete_preview_files never interpolates raw media_type into the generated script", () => {
+  const advanced = getAdvancedTools(bridgeOptions);
+
+  it("rejects a quote-breakout media_type payload instead of embedding it", async () => {
+    mockedSendCommand.mockClear();
+    const payload = 'all"+(system.callSystem("touch /tmp/pwn"))+"';
+    await expect(advanced.delete_preview_files.handler({ media_type: payload })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("media_type must be one of"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown media_type value", async () => {
+    mockedSendCommand.mockClear();
+    await expect(advanced.delete_preview_files.handler({ media_type: "nonsense" })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("media_type must be one of"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("accepts a known media_type and embeds only the validated keyword, not raw input", async () => {
+    const script = await scriptFor(advanced.delete_preview_files, { media_type: "video" });
+    expect(script).toContain('mediaType: "video"');
+    expect(script).not.toContain("callSystem");
+  });
+
+  it("defaults to 'all' when media_type is omitted", async () => {
+    const script = await scriptFor(advanced.delete_preview_files, {});
+    expect(script).toContain('mediaType: "all"');
+    expect(script).toContain("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF");
+  });
+});
